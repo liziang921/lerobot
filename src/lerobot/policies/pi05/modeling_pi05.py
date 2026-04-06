@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
 
 import torch
+import torch.cuda.nvtx as nvtx
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
@@ -809,6 +810,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             )  # Use config max_action_dim for internal processing
             noise = self.sample_noise(actions_shape, device)
 
+        nvtx.range_push("vlm_prefix")
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
@@ -823,10 +825,12 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        nvtx.range_pop()  # vlm_prefix
 
         dt = -1.0 / num_steps
 
         x_t = noise
+        nvtx.range_push("action_expert_all")
         for step in range(num_steps):
             time = 1.0 + step * dt
             time_tensor = torch.tensor(time, dtype=torch.float32, device=device).expand(bsize)
@@ -839,6 +843,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     timestep=current_timestep,
                 )
 
+            nvtx.range_push(f"denoise_step_{step:02d}")
             if self._rtc_enabled():
                 inference_delay = kwargs.get("inference_delay")
                 prev_chunk_left_over = kwargs.get("prev_chunk_left_over")
@@ -854,11 +859,13 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                 )
             else:
                 v_t = denoise_step_partial_call(x_t)
+            nvtx.range_pop()  # denoise_step
 
             x_t = x_t + dt * v_t
 
             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
                 self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)
+        nvtx.range_pop()  # action_expert_all
 
         return x_t
 

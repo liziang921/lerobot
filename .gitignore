@@ -177,3 +177,7 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# Local experiment artifacts
+/train_logs/
+/eval_logs/
